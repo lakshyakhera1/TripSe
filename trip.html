@@ -256,384 +256,409 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" defer></script>
 <script defer>
-  let map;
-  let markers = {};
-  let userMarker;
-  let db;
-  let tripCode;
-  let memberId;
-  let isHost = false;
-  let mapCentered = false;
-  let membersListener = null;
-  let tripStatusListener = null;
+// ⚠️ IMPORTANT: Replace YOUR_RECAPTCHA_SITE_KEY with your actual reCAPTCHA v3 site key
+const RECAPTCHA_SITE_KEY = 'YOUR_RECAPTCHA_SITE_KEY';
 
-  function showError(message) {
-    const toast = document.getElementById('errorToast');
-    toast.textContent = message;
-    toast.style.display = 'block';
-    setTimeout(() => {
-      toast.style.display = 'none';
-    }, 4000);
+let map;
+let markers = {};
+let userMarker;
+let db;
+let tripCode;
+let memberId;
+let isHost = false;
+let mapCentered = false;
+let membersListener = null;
+let tripStatusListener = null;
+
+function showError(message) {
+  const toast = document.getElementById('errorToast');
+  toast.textContent = message;
+  toast.style.display = 'block';
+  setTimeout(() => {
+    toast.style.display = 'none';
+  }, 4000);
+}
+
+function initTrip(){
+  const firebaseConfig = {
+    apiKey: "AIzaSyClUa_Q7nU0yNuFJZ2s53cECH53GL_Q7G8",
+    authDomain: "tripse-1bc73.firebaseapp.com",
+    databaseURL: "https://tripse-1bc73-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "tripse-1bc73",
+    storageBucket: "tripse-1bc73.firebasestorage.app",
+    messagingSenderId: "410824984177",
+    appId: "1:410824984177:web:60a56a9f86e2f017c8fdd0"
+  };
+  
+  try {
+    firebase.initializeApp(firebaseConfig);
+
+    // App Check setup
+    try {
+      firebase.appCheck().activate(RECAPTCHA_SITE_KEY, false);
+    } catch(e) {
+      console.warn('App Check init skipped:', e);
+    }
+
+    db = firebase.database();
+
+    // Sign in anonymously
+    firebase.auth().signInAnonymously().catch(err => {
+      console.error('Auth error:', err);
+      showError('Authentication failed. Please refresh.');
+    });
+  } catch (error) {
+    console.error('Firebase init error:', error);
+    showError('Failed to connect to server. Please refresh the page.');
+    return;
   }
 
-  function initTrip(){
-    const firebaseConfig = {
-      apiKey: "AIzaSyClUa_Q7nU0yNuFJZ2s53cECH53GL_Q7G8",
-      authDomain: "tripse-1bc73.firebaseapp.com",
-      databaseURL: "https://tripse-1bc73-default-rtdb.asia-southeast1.firebasedatabase.app",
-      projectId: "tripse-1bc73",
-      storageBucket: "tripse-1bc73.firebasestorage.app",
-      messagingSenderId: "410824984177",
-      appId: "1:410824984177:web:60a56a9f86e2f017c8fdd0"
-    };
-    
-    try {
-      firebase.initializeApp(firebaseConfig);
-      db = firebase.database();
-    } catch (error) {
-      console.error('Firebase init error:', error);
-      showError('Failed to connect to server. Please refresh the page.');
-      return;
-    }
+  const urlParams = new URLSearchParams(window.location.search);
+  tripCode = urlParams.get('code');
 
-    const urlParams = new URLSearchParams(window.location.search);
-    tripCode = urlParams.get('code');
-    memberId = localStorage.getItem('trip_' + tripCode + '_memberId');
-    isHost = localStorage.getItem('trip_' + tripCode + '_isHost') === 'true';
-
-    if (!tripCode || !memberId) {
-      showError('Invalid trip access. Redirecting...');
-      setTimeout(() => {
-        window.location.href = '/';
-      }, 2000);
-      return;
-    }
-
-    document.getElementById('tripCodeDisplay').textContent = 'Trip: ' + tripCode;
-    
-    if (isHost) {
-      document.getElementById('endTripBtn').style.display = 'block';
-    }
-
-    window.memberId = memberId;
-    initMap();
-    updateUserLocation();
-    loadMembers();
-    listenToTripStatus();
-
+  if (!tripCode) {
+    showError('Invalid trip access. Redirecting...');
     setTimeout(() => {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition((pos) => {
-          fetchWeather(pos.coords.latitude, pos.coords.longitude);
-        }, (err) => {
-          console.warn('Weather location error:', err);
-        });
-      }
-    }, 1000);
+      window.location.href = '/';
+    }, 2000);
+    return;
   }
 
-  function initMap(){
-    try {
-      map = L.map('map', {
-        zoomControl: true,
-        attributionControl: true
-      }).setView([20, 78], 4);
+  // Wait for auth to be ready
+  firebase.auth().onAuthStateChanged((user) => {
+    if (user) {
+      memberId = user.uid;
+      isHost = localStorage.getItem('trip_' + tripCode + '_isHost') === 'true';
+
+      document.getElementById('tripCodeDisplay').textContent = 'Trip: ' + tripCode;
       
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap',
-        maxZoom: 19
-      }).addTo(map);
-    } catch (error) {
-      console.error('Map init error:', error);
-      showError('Failed to load map. Please check your internet connection.');
+      if (isHost) {
+        document.getElementById('endTripBtn').style.display = 'block';
+      }
+
+      window.memberId = memberId;
+      initMap();
+      updateUserLocation();
+      loadMembers();
+      listenToTripStatus();
+
+      setTimeout(() => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition((pos) => {
+            fetchWeather(pos.coords.latitude, pos.coords.longitude);
+          }, (err) => {
+            console.warn('Weather location error:', err);
+          });
+        }
+      }, 1000);
     }
+  });
+}
+
+function initMap(){
+  try {
+    map = L.map('map', {
+      zoomControl: true,
+      attributionControl: true
+    }).setView([20, 78], 4);
+    
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19
+    }).addTo(map);
+  } catch (error) {
+    console.error('Map init error:', error);
+    showError('Failed to load map. Please check your internet connection.');
+  }
+}
+
+function updateUserLocation(){
+  if (!navigator.geolocation) {
+    showError('Geolocation is not supported by your browser.');
+    return;
   }
 
-  function updateUserLocation(){
-    if (!navigator.geolocation) {
-      showError('Geolocation is not supported by your browser.');
-      return;
-    }
+  const watchOptions = {
+    enableHighAccuracy: true,
+    timeout: 10000,
+    maximumAge: 0
+  };
 
-    const watchOptions = {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0
-    };
+  const watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      
+      db.ref('trips/' + tripCode + '/members/' + memberId).update({
+        lat: lat,
+        lng: lng,
+        updatedAt: firebase.database.ServerValue.TIMESTAMP,
+        online: true
+      }).catch(err => {
+        console.error('Location update error:', err);
+        showError('Failed to update location. Check internet connection.');
+      });
 
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
+      if (!userMarker) {
+        userMarker = L.circleMarker([lat, lng], {
+          radius: 10,
+          fillColor: '#45e0c4',
+          color: '#ffffff',
+          weight: 3,
+          opacity: 1,
+          fillOpacity: 0.9
+        }).addTo(map);
         
-        db.ref('trips/' + tripCode + '/members/' + memberId).update({
-          lat: lat,
-          lng: lng,
-          updatedAt: firebase.database.ServerValue.TIMESTAMP,
-          online: true
-        }).catch(err => {
-          console.error('Location update error:', err);
-          showError('Failed to update location. Check internet connection.');
-        });
-
-        if (!userMarker) {
-          userMarker = L.circleMarker([lat, lng], {
-            radius: 10,
-            fillColor: '#45e0c4',
-            color: '#ffffff',
-            weight: 3,
-            opacity: 1,
-            fillOpacity: 0.9
-          }).addTo(map);
-          
-          if (!mapCentered) {
-            map.setView([lat, lng], 15);
-            mapCentered = true;
-          }
-        } else {
-          userMarker.setLatLng([lat, lng]);
+        if (!mapCentered) {
+          map.setView([lat, lng], 15);
+          mapCentered = true;
         }
-      },
-      (err) => {
-        console.error('Geolocation error:', err);
-        let errorMsg = 'Location error: ';
-        
-        switch(err.code) {
-          case 1:
-            errorMsg += 'Permission denied. Please allow location access.';
-            break;
-          case 2:
-            errorMsg += 'Position unavailable. Check your GPS settings.';
-            break;
-          case 3:
-            errorMsg += 'Location request timeout. Please try again.';
-            break;
-          default:
-            errorMsg += 'Unknown error occurred.';
-        }
-        
-        showError(errorMsg);
-        
-        db.ref('trips/' + tripCode + '/members/' + memberId).update({
-          online: false,
-          updatedAt: firebase.database.ServerValue.TIMESTAMP
-        });
-      },
-      watchOptions
-    );
-
-    window.addEventListener('beforeunload', () => {
-      navigator.geolocation.clearWatch(watchId);
+      } else {
+        userMarker.setLatLng([lat, lng]);
+      }
+    },
+    (err) => {
+      console.error('Geolocation error:', err);
+      let errorMsg = 'Location error: ';
+      
+      switch(err.code) {
+        case 1:
+          errorMsg += 'Permission denied. Please allow location access.';
+          break;
+        case 2:
+          errorMsg += 'Position unavailable. Check your GPS settings.';
+          break;
+        case 3:
+          errorMsg += 'Location request timeout. Please try again.';
+          break;
+        default:
+          errorMsg += 'Unknown error occurred.';
+      }
+      
+      showError(errorMsg);
+      
       db.ref('trips/' + tripCode + '/members/' + memberId).update({
         online: false,
         updatedAt: firebase.database.ServerValue.TIMESTAMP
       });
+    },
+    watchOptions
+  );
+
+  window.addEventListener('beforeunload', () => {
+    navigator.geolocation.clearWatch(watchId);
+    db.ref('trips/' + tripCode + '/members/' + memberId).update({
+      online: false,
+      updatedAt: firebase.database.ServerValue.TIMESTAMP
     });
-  }
+  });
+}
 
-  function addOrUpdateMarker(mId, data, name){
-    if (!data.lat || !data.lng) {
-      if (markers[mId]) {
-        markers[mId].remove();
-        delete markers[mId];
-      }
-      return;
-    }
-
-    const isOnline = data.online !== false && 
-                     data.updatedAt && 
-                     (Date.now() - data.updatedAt < 30000);
-
+function addOrUpdateMarker(mId, data, name){
+  if (!data.lat || !data.lng) {
     if (markers[mId]) {
-      markers[mId].setLatLng([data.lat, data.lng]);
-      markers[mId].setStyle({
-        fillColor: isOnline ? (mId === memberId ? '#45e0c4' : '#ffc555') : '#666',
-        color: isOnline ? (mId === memberId ? '#45e0c4' : '#ffc555') : '#666',
-        opacity: isOnline ? 1 : 0.5,
-        fillOpacity: isOnline ? 0.8 : 0.4
-      });
-    } else {
-      const color = mId === memberId ? '#45e0c4' : '#ffc555';
-      const marker = L.circleMarker([data.lat, data.lng], {
-        radius: 10,
-        fillColor: isOnline ? color : '#666',
-        color: isOnline ? color : '#666',
-        weight: 3,
-        opacity: isOnline ? 1 : 0.5,
-        fillOpacity: isOnline ? 0.8 : 0.4
-      }).addTo(map).bindPopup(`<strong>${name}</strong>${mId === memberId ? ' (You)' : ''}`);
-      
-      markers[mId] = marker;
+      markers[mId].remove();
+      delete markers[mId];
     }
+    return;
   }
 
-  function fetchWeather(lat, lng){
-    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,weather_code,rain`)
-      .then(r => r.json())
-      .then(data => {
-        if (data && data.current) {
-          const temp = Math.round(data.current.temperature_2m);
-          const isRaining = data.current.rain > 0;
-          document.getElementById('weatherTemp').textContent = temp + '°C';
-          document.getElementById('weatherDesc').textContent = isRaining ? '🌧️ Rain alert!' : '☀️ Dry conditions';
-          document.getElementById('weatherWidget').style.display = 'block';
-        }
-      })
-      .catch(e => {
-        console.warn('Weather fetch error:', e);
+  const isOnline = data.online !== false && 
+                   data.updatedAt && 
+                   (Date.now() - data.updatedAt < 30000);
+
+  if (markers[mId]) {
+    markers[mId].setLatLng([data.lat, data.lng]);
+    markers[mId].setStyle({
+      fillColor: isOnline ? (mId === memberId ? '#45e0c4' : '#ffc555') : '#666',
+      color: isOnline ? (mId === memberId ? '#45e0c4' : '#ffc555') : '#666',
+      opacity: isOnline ? 1 : 0.5,
+      fillOpacity: isOnline ? 0.8 : 0.4
+    });
+  } else {
+    const color = mId === memberId ? '#45e0c4' : '#ffc555';
+    const marker = L.circleMarker([data.lat, data.lng], {
+      radius: 10,
+      fillColor: isOnline ? color : '#666',
+      color: isOnline ? color : '#666',
+      weight: 3,
+      opacity: isOnline ? 1 : 0.5,
+      fillOpacity: isOnline ? 0.8 : 0.4
+    }).addTo(map).bindPopup(`<strong>${name}</strong>${mId === memberId ? ' (You)' : ''}`);
+    
+    markers[mId] = marker;
+  }
+}
+
+function fetchWeather(lat, lng){
+  fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,weather_code,rain`)
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.current) {
+        const temp = Math.round(data.current.temperature_2m);
+        const isRaining = data.current.rain > 0;
+        document.getElementById('weatherTemp').textContent = temp + '°C';
+        document.getElementById('weatherDesc').textContent = isRaining ? '🌧️ Rain alert!' : '☀️ Dry conditions';
+        document.getElementById('weatherWidget').style.display = 'block';
+      }
+    })
+    .catch(e => {
+      console.warn('Weather fetch error:', e);
+    });
+}
+
+function loadMembers(){
+  if (membersListener) {
+    db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+  }
+
+  membersListener = db.ref('trips/' + tripCode + '/members').on('value', 
+    (snap) => {
+      const members = snap.val() || {};
+      const list = document.getElementById('membersList');
+      list.innerHTML = '';
+      
+      const memberEntries = Object.entries(members);
+      document.getElementById('memberCount').textContent = memberEntries.length;
+
+      memberEntries.forEach(([mId, data]) => {
+        const name = data.name || 'Unknown';
+        const isMe = mId === memberId;
+        const phone = data.phone || '';
+        const isOnline = data.online !== false && 
+                        data.updatedAt && 
+                        (Date.now() - data.updatedAt < 30000);
+        
+        const item = document.createElement('div');
+        item.className = 'member-item';
+        item.innerHTML = `
+          <div class="member-info">
+            <div class="member-name">
+              <span class="status-dot ${isOnline ? 'status-online' : 'status-offline'}"></span>
+              ${name}${isMe ? ' (you)' : ''}
+            </div>
+            <div class="member-badge">${mId.slice(0, 6)} • ${isOnline ? 'Online' : 'Offline'}</div>
+          </div>
+          <div class="member-actions">
+            <button onclick="callMember('${name}', '${phone}')" ${!phone ? 'disabled' : ''}>Call</button>
+            <button onclick="messageMember('${name}', '${phone}')" ${!phone ? 'disabled' : ''}>Msg</button>
+          </div>
+        `;
+        list.appendChild(item);
+        
+        addOrUpdateMarker(mId, data, name);
       });
+    },
+    (error) => {
+      console.error('Members listener error:', error);
+      showError('Failed to load members. Check internet connection.');
+    }
+  );
+}
+
+function listenToTripStatus(){
+  if (tripStatusListener) {
+    db.ref('trips/' + tripCode).off('value', tripStatusListener);
   }
 
-  function loadMembers(){
+  tripStatusListener = db.ref('trips/' + tripCode).on('value', 
+    (snap) => {
+      const trip = snap.val();
+      if (trip && trip.ended === true) {
+        showError('Trip has been ended by the host. Redirecting...');
+        
+        if (membersListener) {
+          db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+        }
+        
+        setTimeout(() => {
+          window.location.href = '/';
+        }, 2000);
+      }
+    },
+    (error) => {
+      console.error('Trip status listener error:', error);
+    }
+  );
+}
+
+function callMember(name, phone){
+  if (!phone) {
+    showError(`${name} has not shared their phone number.`);
+    return;
+  }
+  window.location.href = 'tel:' + phone;
+}
+
+function messageMember(name, phone){
+  if (!phone) {
+    showError(`${name} has not shared their phone number.`);
+    return;
+  }
+  window.location.href = 'sms:' + phone;
+}
+
+document.getElementById('shareBtn').addEventListener('click', () => {
+  const link = window.location.href;
+  if (navigator.share) {
+    navigator.share({ 
+      title: 'Join my trip on TripSe', 
+      text: 'Track our trip in real-time!',
+      url: link 
+    }).catch(err => {
+      console.log('Share cancelled');
+    });
+  } else {
+    prompt('Copy this link to share:', link);
+  }
+});
+
+document.getElementById('endTripBtn').addEventListener('click', () => {
+  if (!confirm('Are you sure you want to end this trip for everyone?')) return;
+  
+  db.ref('trips/' + tripCode).update({ 
+    ended: true,
+    endedAt: firebase.database.ServerValue.TIMESTAMP
+  }).then(() => {
+    showError('Trip ended successfully. Redirecting...');
+    
     if (membersListener) {
       db.ref('trips/' + tripCode + '/members').off('value', membersListener);
     }
-
-    membersListener = db.ref('trips/' + tripCode + '/members').on('value', 
-      (snap) => {
-        const members = snap.val() || {};
-        const list = document.getElementById('membersList');
-        list.innerHTML = '';
-        
-        const memberEntries = Object.entries(members);
-        document.getElementById('memberCount').textContent = memberEntries.length;
-
-        memberEntries.forEach(([mId, data]) => {
-          const name = data.name || 'Unknown';
-          const isMe = mId === memberId;
-          const phone = data.phone || '';
-          const isOnline = data.online !== false && 
-                          data.updatedAt && 
-                          (Date.now() - data.updatedAt < 30000);
-          
-          const item = document.createElement('div');
-          item.className = 'member-item';
-          item.innerHTML = `
-            <div class="member-info">
-              <div class="member-name">
-                <span class="status-dot ${isOnline ? 'status-online' : 'status-offline'}"></span>
-                ${name}${isMe ? ' (you)' : ''}
-              </div>
-              <div class="member-badge">${mId.slice(0, 6)} • ${isOnline ? 'Online' : 'Offline'}</div>
-            </div>
-            <div class="member-actions">
-              <button onclick="callMember('${name}', '${phone}')" ${!phone ? 'disabled' : ''}>Call</button>
-              <button onclick="messageMember('${name}', '${phone}')" ${!phone ? 'disabled' : ''}>Msg</button>
-            </div>
-          `;
-          list.appendChild(item);
-          
-          addOrUpdateMarker(mId, data, name);
-        });
-      },
-      (error) => {
-        console.error('Members listener error:', error);
-        showError('Failed to load members. Check internet connection.');
-      }
-    );
-  }
-
-  function listenToTripStatus(){
     if (tripStatusListener) {
       db.ref('trips/' + tripCode).off('value', tripStatusListener);
     }
-
-    tripStatusListener = db.ref('trips/' + tripCode).on('value', 
-      (snap) => {
-        const trip = snap.val();
-        if (trip && trip.ended === true) {
-          showError('Trip has been ended by the host. Redirecting...');
-          
-          if (membersListener) {
-            db.ref('trips/' + tripCode + '/members').off('value', membersListener);
-          }
-          
-          setTimeout(() => {
-            window.location.href = '/';
-          }, 2000);
-        }
-      },
-      (error) => {
-        console.error('Trip status listener error:', error);
-      }
-    );
-  }
-
-  function callMember(name, phone){
-    if (!phone) {
-      showError(`${name} has not shared their phone number.`);
-      return;
-    }
-    window.location.href = 'tel:' + phone;
-  }
-
-  function messageMember(name, phone){
-    if (!phone) {
-      showError(`${name} has not shared their phone number.`);
-      return;
-    }
-    window.location.href = 'sms:' + phone;
-  }
-
-  document.getElementById('shareBtn').addEventListener('click', () => {
-    const link = window.location.href;
-    if (navigator.share) {
-      navigator.share({ 
-        title: 'Join my trip on TripSe', 
-        text: 'Track our trip in real-time!',
-        url: link 
-      }).catch(err => {
-        console.log('Share cancelled');
-      });
-    } else {
-      prompt('Copy this link to share:', link);
-    }
-  });
-
-  document.getElementById('endTripBtn').addEventListener('click', () => {
-    if (!confirm('Are you sure you want to end this trip for everyone?')) return;
     
-    db.ref('trips/' + tripCode).update({ 
-      ended: true,
-      endedAt: firebase.database.ServerValue.TIMESTAMP
-    }).then(() => {
-      showError('Trip ended successfully. Redirecting...');
-      
-      if (membersListener) {
-        db.ref('trips/' + tripCode + '/members').off('value', membersListener);
-      }
-      if (tripStatusListener) {
-        db.ref('trips/' + tripCode).off('value', tripStatusListener);
-      }
-      
-      setTimeout(() => {
-        window.location.href = '/';
-      }, 2000);
-    }).catch(err => {
-      console.error('End trip error:', err);
-      showError('Failed to end trip. Please try again.');
-    });
+    setTimeout(() => {
+      window.location.href = '/';
+    }, 2000);
+  }).catch(err => {
+    console.error('End trip error:', err);
+    showError('Failed to end trip. Please try again.');
   });
-  
-  document.addEventListener('DOMContentLoaded', () => {
-    if (typeof firebase !== 'undefined' && typeof L !== 'undefined') {
-      initTrip();
-    } else {
-      let attempts = 0;
-      const checkInterval = setInterval(() => {
-        attempts++;
-        if (typeof firebase !== 'undefined' && typeof L !== 'undefined') {
-          clearInterval(checkInterval);
-          initTrip();
-        } else if (attempts > 50) {
-          clearInterval(checkInterval);
-          showError('Failed to load required libraries. Please refresh the page.');
-        }
-      }, 100);
-    }
-  });
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (typeof firebase !== 'undefined' && typeof L !== 'undefined') {
+    initTrip();
+  } else {
+    let attempts = 0;
+    const checkInterval = setInterval(() => {
+      attempts++;
+      if (typeof firebase !== 'undefined' && typeof L !== 'undefined') {
+        clearInterval(checkInterval);
+        initTrip();
+      } else if (attempts > 50) {
+        clearInterval(checkInterval);
+        showError('Failed to load required libraries. Please refresh the page.');
+      }
+    }, 100);
+  }
+});
 </script>
 
 </body>
