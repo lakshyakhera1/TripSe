@@ -155,9 +155,10 @@
     padding: 12px 16px;
     z-index: 50;
     font-size: 13px;
+    min-width: 140px;
   }
   .weather-temp{ font-size: 18px; font-weight: 700; }
-  .weather-desc{ color: var(--text-dim); font-size: 12px; }
+  .weather-desc{ color: var(--text-dim); font-size: 12px; margin-top: 2px; }
 
   .error-toast{
     position: fixed;
@@ -226,6 +227,19 @@
   .leaflet-control-zoom a:hover{
     background: rgba(27,20,64,0.9) !important;
   }
+
+  .leaflet-control-layers{
+    background: rgba(12,10,31,0.9) !important;
+    border: 1px solid rgba(255,255,255,0.13) !important;
+    color: var(--text) !important;
+  }
+  .leaflet-control-layers-expanded{
+    padding: 10px !important;
+  }
+  .leaflet-control-layers label{
+    color: var(--text) !important;
+    font-size: 12px !important;
+  }
 </style>
 </head>
 <body>
@@ -243,8 +257,8 @@
 <div class="map-container">
   <div id="map"></div>
   <div class="weather-widget" id="weatherWidget" style="display:none;">
-    <div class="weather-temp" id="weatherTemp"></div>
-    <div class="weather-desc" id="weatherDesc"></div>
+    <div class="weather-temp" id="weatherTemp">--°C</div>
+    <div class="weather-desc" id="weatherDesc">Loading...</div>
   </div>
   <div class="members-panel" id="membersPanel">
     <div class="members-head">Members (<span id="memberCount">0</span>)</div>
@@ -346,15 +360,32 @@ function initTrip(){
       loadMembers();
       listenToTripStatus();
 
-      setTimeout(() => {
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition((pos) => {
-            fetchWeather(pos.coords.latitude, pos.coords.longitude);
-          }, (err) => {
-            console.warn('Weather location error:', err);
-          });
+      // Weather fetch with retry
+      let weatherAttempts = 0;
+      function tryFetchWeather() {
+        if (weatherAttempts >= 3) {
+          console.warn('Weather fetch failed after 3 attempts');
+          document.getElementById('weatherTemp').textContent = '--°C';
+          document.getElementById('weatherDesc').textContent = 'Weather unavailable';
+          document.getElementById('weatherWidget').style.display = 'block';
+          return;
         }
-      }, 1000);
+        
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              fetchWeather(pos.coords.latitude, pos.coords.longitude);
+            },
+            (err) => {
+              console.warn('Weather location attempt', weatherAttempts + 1, 'failed:', err);
+              weatherAttempts++;
+              setTimeout(tryFetchWeather, 2000);
+            },
+            { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+          );
+        }
+      }
+      setTimeout(tryFetchWeather, 1500);
     }
   });
 }
@@ -366,10 +397,31 @@ function initMap(){
       attributionControl: true
     }).setView([20, 78], 4);
     
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    // Base layers
+    const streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap',
       maxZoom: 19
+    });
+    
+    const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '© Esri',
+      maxZoom: 19
+    });
+    
+    // Add street layer by default
+    streetLayer.addTo(map);
+    
+    // Layer control for switching
+    const baseLayers = {
+      "🗺️ Street Map": streetLayer,
+      "🛰️ Satellite": satelliteLayer
+    };
+    
+    L.control.layers(baseLayers, null, {
+      position: 'topright',
+      collapsed: true
     }).addTo(map);
+    
   } catch (error) {
     console.error('Map init error:', error);
     showError('Failed to load map. Please check your internet connection.');
@@ -495,19 +547,48 @@ function addOrUpdateMarker(mId, data, name){
 }
 
 function fetchWeather(lat, lng){
+  console.log('Fetching weather for:', lat, lng);
+  
   fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,weather_code,rain`)
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error('Weather API error: ' + r.status);
+      return r.json();
+    })
     .then(data => {
+      console.log('Weather data:', data);
       if (data && data.current) {
         const temp = Math.round(data.current.temperature_2m);
         const isRaining = data.current.rain > 0;
+        const weatherCode = data.current.weather_code;
+        
+        let weatherDesc = '☀️ Clear';
+        if (isRaining) {
+          weatherDesc = '🌧️ Rain alert!';
+        } else if (weatherCode >= 1 && weatherCode <= 3) {
+          weatherDesc = '⛅ Partly cloudy';
+        } else if (weatherCode >= 45 && weatherCode <= 48) {
+          weatherDesc = '🌫️ Foggy';
+        } else if (weatherCode >= 51 && weatherCode <= 67) {
+          weatherDesc = '🌧️ Drizzle/Rain';
+        } else if (weatherCode >= 71 && weatherCode <= 77) {
+          weatherDesc = '🌨️ Snow';
+        } else if (weatherCode >= 80 && weatherCode <= 82) {
+          weatherDesc = '🌦️ Showers';
+        } else if (weatherCode >= 95) {
+          weatherDesc = '⛈️ Thunderstorm';
+        }
+        
         document.getElementById('weatherTemp').textContent = temp + '°C';
-        document.getElementById('weatherDesc').textContent = isRaining ? '🌧️ Rain alert!' : '☀️ Dry conditions';
+        document.getElementById('weatherDesc').textContent = weatherDesc;
         document.getElementById('weatherWidget').style.display = 'block';
+        console.log('Weather widget shown');
       }
     })
     .catch(e => {
-      console.warn('Weather fetch error:', e);
+      console.error('Weather fetch error:', e);
+      document.getElementById('weatherTemp').textContent = '--°C';
+      document.getElementById('weatherDesc').textContent = 'Weather unavailable';
+      document.getElementById('weatherWidget').style.display = 'block';
     });
 }
 
@@ -516,15 +597,31 @@ function loadMembers(){
     db.ref('trips/' + tripCode + '/members').off('value', membersListener);
   }
 
+  let previousMembers = {};
+
   membersListener = db.ref('trips/' + tripCode + '/members').on('value', 
     (snap) => {
       const members = snap.val() || {};
       const list = document.getElementById('membersList');
-      list.innerHTML = '';
-      
       const memberEntries = Object.entries(members);
       document.getElementById('memberCount').textContent = memberEntries.length;
 
+      // Track current member IDs
+      const currentMemberIds = new Set(memberEntries.map(([id]) => id));
+
+      // Remove members who left
+      Object.keys(previousMembers).forEach(mId => {
+        if (!currentMemberIds.has(mId)) {
+          const oldItem = document.getElementById('member-' + mId);
+          if (oldItem) oldItem.remove();
+          if (markers[mId]) {
+            markers[mId].remove();
+            delete markers[mId];
+          }
+        }
+      });
+
+      // Add or update members
       memberEntries.forEach(([mId, data]) => {
         const name = data.name || 'Unknown';
         const isMe = mId === memberId;
@@ -532,9 +629,18 @@ function loadMembers(){
         const isOnline = data.online !== false && 
                         data.updatedAt && 
                         (Date.now() - data.updatedAt < 30000);
-        
-        const item = document.createElement('div');
-        item.className = 'member-item';
+
+        let item = document.getElementById('member-' + mId);
+
+        if (!item) {
+          // Create new member item
+          item = document.createElement('div');
+          item.id = 'member-' + mId;
+          item.className = 'member-item';
+          list.appendChild(item);
+        }
+
+        // Update content
         item.innerHTML = `
           <div class="member-info">
             <div class="member-name">
@@ -548,10 +654,12 @@ function loadMembers(){
             <button onclick="messageMember('${name}', '${phone}')" ${!phone ? 'disabled' : ''}>Msg</button>
           </div>
         `;
-        list.appendChild(item);
         
+        // Update marker
         addOrUpdateMarker(mId, data, name);
       });
+
+      previousMembers = {...members};
     },
     (error) => {
       console.error('Members listener error:', error);
