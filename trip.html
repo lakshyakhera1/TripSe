@@ -18,6 +18,7 @@
     --coral: #ff5d8f;
     --violet: #9d7bff;
     --teal: #45e0c4;
+    --offline: #666;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -85,6 +86,10 @@
     border-bottom: 1px solid rgba(255,255,255,0.08);
     font-weight: 600;
     font-size: 14px;
+    position: sticky;
+    top: 0;
+    background: rgba(12,10,31,0.98);
+    z-index: 10;
   }
   .member-item{
     padding: 12px 16px;
@@ -92,9 +97,33 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    transition: background 0.2s ease;
   }
-  .member-name{ font-size: 13px; }
-  .member-badge{ font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-faint); }
+  .member-item:hover{
+    background: rgba(255,255,255,0.03);
+  }
+  .member-info{ flex: 1; }
+  .member-name{ 
+    font-size: 13px; 
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .member-badge{ 
+    font-family: 'JetBrains Mono', monospace; 
+    font-size: 10px; 
+    color: var(--text-faint); 
+    margin-top: 2px;
+  }
+  .status-dot{
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .status-online{ background: var(--teal); box-shadow: 0 0 8px var(--teal); }
+  .status-offline{ background: var(--offline); }
   .member-actions{ display: flex; gap: 6px; }
   .member-actions button{
     background: rgba(69,224,196,0.2);
@@ -102,11 +131,19 @@
     color: var(--teal);
     font-size: 11px;
     font-weight: 600;
-    padding: 4px 8px;
+    padding: 6px 10px;
     border-radius: 6px;
     cursor: pointer;
+    transition: all 0.2s ease;
   }
-  .member-actions button:hover{ background: rgba(69,224,196,0.3); }
+  .member-actions button:hover{ 
+    background: rgba(69,224,196,0.3);
+    transform: scale(1.05);
+  }
+  .member-actions button:disabled{
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
 
   .weather-widget{
     position: absolute;
@@ -122,13 +159,73 @@
   .weather-temp{ font-size: 18px; font-weight: 700; }
   .weather-desc{ color: var(--text-dim); font-size: 12px; }
 
-  @media (max-width: 768px){
-    .members-panel{ width: 100%; max-height: 40%; border-radius: 16px 16px 0 0; }
+  .error-toast{
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255,93,143,0.95);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    z-index: 1000;
+    display: none;
+    animation: slideDown 0.3s ease;
+  }
+  @keyframes slideDown {
+    from { transform: translateX(-50%) translateY(-20px); opacity: 0; }
+    to { transform: translateX(-50%) translateY(0); opacity: 1; }
   }
 
-  .leaflet-popup-content-wrapper{ background: rgba(12,10,31,0.95); border: 1px solid rgba(255,255,255,0.13); }
-  .leaflet-popup-content{ color: var(--text); font-size: 12px; }
+  @media (max-width: 768px){
+    .members-panel{ 
+      width: 100%; 
+      max-height: 40%; 
+      border-radius: 16px 16px 0 0;
+      border-top-left-radius: 16px;
+      border-top-right-radius: 16px;
+    }
+    .member-actions button{
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+    header{
+      padding: 12px 16px;
+    }
+    .trip-code{
+      font-size: 12px;
+    }
+    .btn{
+      padding: 8px 14px;
+      font-size: 12px;
+    }
+  }
+
+  .leaflet-popup-content-wrapper{ 
+    background: rgba(12,10,31,0.95); 
+    border: 1px solid rgba(255,255,255,0.13); 
+    border-radius: 10px;
+  }
+  .leaflet-popup-content{ 
+    color: var(--text); 
+    font-size: 12px; 
+    margin: 10px 14px;
+  }
   .leaflet-popup-tip{ background: rgba(12,10,31,0.95); }
+  
+  .leaflet-control-zoom{
+    border: 1px solid rgba(255,255,255,0.13) !important;
+  }
+  .leaflet-control-zoom a{
+    background: rgba(12,10,31,0.9) !important;
+    color: var(--text) !important;
+    border-bottom: 1px solid rgba(255,255,255,0.13) !important;
+  }
+  .leaflet-control-zoom a:hover{
+    background: rgba(27,20,64,0.9) !important;
+  }
 </style>
 </head>
 <body>
@@ -155,193 +252,386 @@
   </div>
 </div>
 
+<div class="error-toast" id="errorToast"></div>
+
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js" defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" defer></script>
 <script defer>
-  function initTrip(){
-    const firebaseConfig = {
-    apiKey: "AIzaSyClUa_Q7nU0yNuFJZ2s53cECH53GL_Q7G8",
-    authDomain: "tripse-1bc73.firebaseapp.com",
-    databaseURL: "https://tripse-1bc73-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "tripse-1bc73",
-    storageBucket: "tripse-1bc73.firebasestorage.app",
-    messagingSenderId: "410824984177",
-    appId: "1:410824984177:web:60a56a9f86e2f017c8fdd0"
-  };
-  firebase.initializeApp(firebaseConfig);
-  const db = firebase.database();
-
-  const urlParams = new URLSearchParams(window.location.search);
-  const tripCode = urlParams.get('code');
-  const memberId = localStorage.getItem('trip_' + tripCode + '_memberId');
-  const isHost = localStorage.getItem('trip_' + tripCode + '_isHost') === 'true';
-
-  if (!tripCode || !memberId) {
-    alert('Invalid trip access.');
-    window.location.href = '/';
-  }
-
-  document.getElementById('tripCodeDisplay').textContent = 'Trip: ' + tripCode;
-  if (isHost) document.getElementById('endTripBtn').style.display = 'block';
-
   let map;
   let markers = {};
   let userMarker;
+  let db;
+  let tripCode;
+  let memberId;
+  let isHost = false;
+  let mapCentered = false;
+  let membersListener = null;
+  let tripStatusListener = null;
 
-  function initMap(){
-    map = L.map('map').setView([20, 78], 4);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap',
-      maxZoom: 19
-    }).addTo(map);
+  function showError(message) {
+    const toast = document.getElementById('errorToast');
+    toast.textContent = message;
+    toast.style.display = 'block';
+    setTimeout(() => {
+      toast.style.display = 'none';
+    }, 4000);
   }
 
-  function updateUserLocation(){
-    if (!navigator.geolocation) {
-      alert('Geolocation not available.');
+  function initTrip(){
+    const firebaseConfig = {
+      apiKey: "AIzaSyClUa_Q7nU0yNuFJZ2s53cECH53GL_Q7G8",
+      authDomain: "tripse-1bc73.firebaseapp.com",
+      databaseURL: "https://tripse-1bc73-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "tripse-1bc73",
+      storageBucket: "tripse-1bc73.firebasestorage.app",
+      messagingSenderId: "410824984177",
+      appId: "1:410824984177:web:60a56a9f86e2f017c8fdd0"
+    };
+    
+    try {
+      firebase.initializeApp(firebaseConfig);
+      db = firebase.database();
+    } catch (error) {
+      console.error('Firebase init error:', error);
+      showError('Failed to connect to server. Please refresh the page.');
       return;
     }
-    navigator.geolocation.watchPosition((pos) => {
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      
-      db.ref('trips/' + tripCode + '/members/' + memberId).update({
-        lat: lat,
-        lng: lng,
-        updatedAt: firebase.database.ServerValue.TIMESTAMP
-      });
 
-      if (!userMarker) {
-        userMarker = L.circleMarker([lat, lng], {
-          radius: 8,
-          fillColor: '#45e0c4',
-          color: '#45e0c4',
-          weight: 2,
-          opacity: 1,
-          fillOpacity: 0.8
-        }).addTo(map);
-      } else {
-        userMarker.setLatLng([lat, lng]);
-      }
-      
-      map.setView([lat, lng], map.getZoom());
-    }, (err) => {
-      console.error('Geolocation error:', err);
-    }, {
-      enableHighAccuracy: true,
-      timeout: 5000,
-      maximumAge: 0
-    });
-  }
+    const urlParams = new URLSearchParams(window.location.search);
+    tripCode = urlParams.get('code');
+    memberId = localStorage.getItem('trip_' + tripCode + '_memberId');
+    isHost = localStorage.getItem('trip_' + tripCode + '_isHost') === 'true';
 
-  function addOrUpdateMarker(memberId, data, name){
-    if (!data.lat || !data.lng) return;
-
-    if (markers[memberId]) {
-      markers[memberId].setLatLng([data.lat, data.lng]);
-    } else {
-      const color = memberId === window.memberId ? '#45e0c4' : '#ffc555';
-      const marker = L.circleMarker([data.lat, data.lng], {
-        radius: 8,
-        fillColor: color,
-        color: color,
-        weight: 2,
-        opacity: 1,
-        fillOpacity: 0.8
-      }).addTo(map).bindPopup(name);
-      markers[memberId] = marker;
+    if (!tripCode || !memberId) {
+      showError('Invalid trip access. Redirecting...');
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 2000);
+      return;
     }
-  }
 
-  function fetchWeather(lat, lng){
-    const apiKey = 'demo';
-    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,weather_code,rain`)
-      .then(r => r.json())
-      .then(data => {
-        const temp = Math.round(data.current.temperature_2m);
-        const isRaining = data.current.rain > 0;
-        document.getElementById('weatherTemp').textContent = temp + '°C';
-        document.getElementById('weatherDesc').textContent = isRaining ? '🌧️ Rain alert!' : 'Dry conditions';
-        document.getElementById('weatherWidget').style.display = 'block';
-      })
-      .catch(e => console.error('Weather fetch error:', e));
-  }
-
-  function loadMembers(){
-    db.ref('trips/' + tripCode + '/members').on('value', (snap) => {
-      const members = snap.val() || {};
-      const list = document.getElementById('membersList');
-      list.innerHTML = '';
-      document.getElementById('memberCount').textContent = Object.keys(members).length;
-
-      Object.entries(members).forEach(([mId, data]) => {
-        const name = data.name || 'Unknown';
-        const isMe = mId === memberId;
-        
-        const item = document.createElement('div');
-        item.className = 'member-item';
-        item.innerHTML = `
-          <div>
-            <div class="member-name">${name}${isMe ? ' (you)' : ''}</div>
-            <div class="member-badge">${mId.slice(0, 6)}</div>
-          </div>
-          <div class="member-actions">
-            <button onclick="callMember('${name}')">Call</button>
-            <button onclick="messageMember('${name}')">Msg</button>
-          </div>
-        `;
-        list.appendChild(item);
-        
-        addOrUpdateMarker(mId, data, name);
-      });
-    });
-  }
-
-  function callMember(name){
-    const tel = prompt(`Phone number for ${name}:`);
-    if (tel) window.location.href = 'tel:' + tel;
-  }
-
-  function messageMember(name){
-    const num = prompt(`Phone number for ${name}:`);
-    if (num) window.location.href = 'sms:' + num;
-  }
-
-  document.getElementById('shareBtn').addEventListener('click', () => {
-    const link = window.location.href;
-    if (navigator.share) {
-      navigator.share({ title: 'Join my trip', url: link });
-    } else {
-      prompt('Share this link:', link);
+    document.getElementById('tripCodeDisplay').textContent = 'Trip: ' + tripCode;
+    
+    if (isHost) {
+      document.getElementById('endTripBtn').style.display = 'block';
     }
-  });
-
-  document.getElementById('endTripBtn').addEventListener('click', () => {
-    if (!confirm('End this trip for everyone?')) return;
-    db.ref('trips/' + tripCode).update({ ended: true }).then(() => {
-      alert('Trip ended.');
-      window.location.href = '/';
-    });
-  });
 
     window.memberId = memberId;
     initMap();
     updateUserLocation();
     loadMembers();
+    listenToTripStatus();
 
     setTimeout(() => {
-      navigator.geolocation.getCurrentPosition((pos) => {
-        fetchWeather(pos.coords.latitude, pos.coords.longitude);
-      });
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition((pos) => {
+          fetchWeather(pos.coords.latitude, pos.coords.longitude);
+        }, (err) => {
+          console.warn('Weather location error:', err);
+        });
+      }
     }, 1000);
   }
+
+  function initMap(){
+    try {
+      map = L.map('map', {
+        zoomControl: true,
+        attributionControl: true
+      }).setView([20, 78], 4);
+      
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19
+      }).addTo(map);
+    } catch (error) {
+      console.error('Map init error:', error);
+      showError('Failed to load map. Please check your internet connection.');
+    }
+  }
+
+  function updateUserLocation(){
+    if (!navigator.geolocation) {
+      showError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    const watchOptions = {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0
+    };
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        
+        db.ref('trips/' + tripCode + '/members/' + memberId).update({
+          lat: lat,
+          lng: lng,
+          updatedAt: firebase.database.ServerValue.TIMESTAMP,
+          online: true
+        }).catch(err => {
+          console.error('Location update error:', err);
+          showError('Failed to update location. Check internet connection.');
+        });
+
+        if (!userMarker) {
+          userMarker = L.circleMarker([lat, lng], {
+            radius: 10,
+            fillColor: '#45e0c4',
+            color: '#ffffff',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.9
+          }).addTo(map);
+          
+          if (!mapCentered) {
+            map.setView([lat, lng], 15);
+            mapCentered = true;
+          }
+        } else {
+          userMarker.setLatLng([lat, lng]);
+        }
+      },
+      (err) => {
+        console.error('Geolocation error:', err);
+        let errorMsg = 'Location error: ';
+        
+        switch(err.code) {
+          case 1:
+            errorMsg += 'Permission denied. Please allow location access.';
+            break;
+          case 2:
+            errorMsg += 'Position unavailable. Check your GPS settings.';
+            break;
+          case 3:
+            errorMsg += 'Location request timeout. Please try again.';
+            break;
+          default:
+            errorMsg += 'Unknown error occurred.';
+        }
+        
+        showError(errorMsg);
+        
+        db.ref('trips/' + tripCode + '/members/' + memberId).update({
+          online: false,
+          updatedAt: firebase.database.ServerValue.TIMESTAMP
+        });
+      },
+      watchOptions
+    );
+
+    window.addEventListener('beforeunload', () => {
+      navigator.geolocation.clearWatch(watchId);
+      db.ref('trips/' + tripCode + '/members/' + memberId).update({
+        online: false,
+        updatedAt: firebase.database.ServerValue.TIMESTAMP
+      });
+    });
+  }
+
+  function addOrUpdateMarker(mId, data, name){
+    if (!data.lat || !data.lng) {
+      if (markers[mId]) {
+        markers[mId].remove();
+        delete markers[mId];
+      }
+      return;
+    }
+
+    const isOnline = data.online !== false && 
+                     data.updatedAt && 
+                     (Date.now() - data.updatedAt < 30000);
+
+    if (markers[mId]) {
+      markers[mId].setLatLng([data.lat, data.lng]);
+      markers[mId].setStyle({
+        fillColor: isOnline ? (mId === memberId ? '#45e0c4' : '#ffc555') : '#666',
+        color: isOnline ? (mId === memberId ? '#45e0c4' : '#ffc555') : '#666',
+        opacity: isOnline ? 1 : 0.5,
+        fillOpacity: isOnline ? 0.8 : 0.4
+      });
+    } else {
+      const color = mId === memberId ? '#45e0c4' : '#ffc555';
+      const marker = L.circleMarker([data.lat, data.lng], {
+        radius: 10,
+        fillColor: isOnline ? color : '#666',
+        color: isOnline ? color : '#666',
+        weight: 3,
+        opacity: isOnline ? 1 : 0.5,
+        fillOpacity: isOnline ? 0.8 : 0.4
+      }).addTo(map).bindPopup(`<strong>${name}</strong>${mId === memberId ? ' (You)' : ''}`);
+      
+      markers[mId] = marker;
+    }
+  }
+
+  function fetchWeather(lat, lng){
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,weather_code,rain`)
+      .then(r => r.json())
+      .then(data => {
+        if (data && data.current) {
+          const temp = Math.round(data.current.temperature_2m);
+          const isRaining = data.current.rain > 0;
+          document.getElementById('weatherTemp').textContent = temp + '°C';
+          document.getElementById('weatherDesc').textContent = isRaining ? '🌧️ Rain alert!' : '☀️ Dry conditions';
+          document.getElementById('weatherWidget').style.display = 'block';
+        }
+      })
+      .catch(e => {
+        console.warn('Weather fetch error:', e);
+      });
+  }
+
+  function loadMembers(){
+    if (membersListener) {
+      db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+    }
+
+    membersListener = db.ref('trips/' + tripCode + '/members').on('value', 
+      (snap) => {
+        const members = snap.val() || {};
+        const list = document.getElementById('membersList');
+        list.innerHTML = '';
+        
+        const memberEntries = Object.entries(members);
+        document.getElementById('memberCount').textContent = memberEntries.length;
+
+        memberEntries.forEach(([mId, data]) => {
+          const name = data.name || 'Unknown';
+          const isMe = mId === memberId;
+          const phone = data.phone || '';
+          const isOnline = data.online !== false && 
+                          data.updatedAt && 
+                          (Date.now() - data.updatedAt < 30000);
+          
+          const item = document.createElement('div');
+          item.className = 'member-item';
+          item.innerHTML = `
+            <div class="member-info">
+              <div class="member-name">
+                <span class="status-dot ${isOnline ? 'status-online' : 'status-offline'}"></span>
+                ${name}${isMe ? ' (you)' : ''}
+              </div>
+              <div class="member-badge">${mId.slice(0, 6)} • ${isOnline ? 'Online' : 'Offline'}</div>
+            </div>
+            <div class="member-actions">
+              <button onclick="callMember('${name}', '${phone}')" ${!phone ? 'disabled' : ''}>Call</button>
+              <button onclick="messageMember('${name}', '${phone}')" ${!phone ? 'disabled' : ''}>Msg</button>
+            </div>
+          `;
+          list.appendChild(item);
+          
+          addOrUpdateMarker(mId, data, name);
+        });
+      },
+      (error) => {
+        console.error('Members listener error:', error);
+        showError('Failed to load members. Check internet connection.');
+      }
+    );
+  }
+
+  function listenToTripStatus(){
+    if (tripStatusListener) {
+      db.ref('trips/' + tripCode).off('value', tripStatusListener);
+    }
+
+    tripStatusListener = db.ref('trips/' + tripCode).on('value', 
+      (snap) => {
+        const trip = snap.val();
+        if (trip && trip.ended === true) {
+          showError('Trip has been ended by the host. Redirecting...');
+          
+          if (membersListener) {
+            db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+          }
+          
+          setTimeout(() => {
+            window.location.href = '/';
+          }, 2000);
+        }
+      },
+      (error) => {
+        console.error('Trip status listener error:', error);
+      }
+    );
+  }
+
+  function callMember(name, phone){
+    if (!phone) {
+      showError(`${name} has not shared their phone number.`);
+      return;
+    }
+    window.location.href = 'tel:' + phone;
+  }
+
+  function messageMember(name, phone){
+    if (!phone) {
+      showError(`${name} has not shared their phone number.`);
+      return;
+    }
+    window.location.href = 'sms:' + phone;
+  }
+
+  document.getElementById('shareBtn').addEventListener('click', () => {
+    const link = window.location.href;
+    if (navigator.share) {
+      navigator.share({ 
+        title: 'Join my trip on TripSe', 
+        text: 'Track our trip in real-time!',
+        url: link 
+      }).catch(err => {
+        console.log('Share cancelled');
+      });
+    } else {
+      prompt('Copy this link to share:', link);
+    }
+  });
+
+  document.getElementById('endTripBtn').addEventListener('click', () => {
+    if (!confirm('Are you sure you want to end this trip for everyone?')) return;
+    
+    db.ref('trips/' + tripCode).update({ 
+      ended: true,
+      endedAt: firebase.database.ServerValue.TIMESTAMP
+    }).then(() => {
+      showError('Trip ended successfully. Redirecting...');
+      
+      if (membersListener) {
+        db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+      }
+      if (tripStatusListener) {
+        db.ref('trips/' + tripCode).off('value', tripStatusListener);
+      }
+      
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 2000);
+    }).catch(err => {
+      console.error('End trip error:', err);
+      showError('Failed to end trip. Please try again.');
+    });
+  });
   
   document.addEventListener('DOMContentLoaded', () => {
     if (typeof firebase !== 'undefined' && typeof L !== 'undefined') {
       initTrip();
     } else {
-      setTimeout(() => initTrip(), 200);
+      let attempts = 0;
+      const checkInterval = setInterval(() => {
+        attempts++;
+        if (typeof firebase !== 'undefined' && typeof L !== 'undefined') {
+          clearInterval(checkInterval);
+          initTrip();
+        } else if (attempts > 50) {
+          clearInterval(checkInterval);
+          showError('Failed to load required libraries. Please refresh the page.');
+        }
+      }, 100);
     }
   });
 </script>
