@@ -243,7 +243,12 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js" defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js" defer></script>
 <script defer>
+// ⚠️ IMPORTANT: Replace YOUR_RECAPTCHA_SITE_KEY with your actual reCAPTCHA v3 site key from Firebase Console → App Check
+const RECAPTCHA_SITE_KEY = 'YOUR_RECAPTCHA_SITE_KEY';
+
 function initApp(){
   const firebaseConfig = {
     apiKey: "AIzaSyClUa_Q7nU0yNuFJZ2s53cECH53GL_Q7G8",
@@ -255,7 +260,21 @@ function initApp(){
     appId: "1:410824984177:web:60a56a9f86e2f017c8fdd0"
   };
   firebase.initializeApp(firebaseConfig);
+
+  // App Check setup
+  try {
+    firebase.appCheck().activate(RECAPTCHA_SITE_KEY, false);
+  } catch(e) {
+    console.warn('App Check init skipped:', e);
+  }
+
   const db = firebase.database();
+
+  // Sign in anonymously
+  firebase.auth().signInAnonymously().catch(err => {
+    console.error('Auth error:', err);
+    showToast('Authentication failed. Please refresh the page.', true);
+  });
 
   function showToast(msg, isError){
     const t = document.getElementById('toast');
@@ -279,10 +298,6 @@ function initApp(){
 
   function isValidTripCode(code){
     return /^[A-Z0-9]{6}$/.test(code);
-  }
-
-  function makeId(){
-    return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
   }
 
   function randomCode(){
@@ -356,6 +371,13 @@ function initApp(){
 
   createConfirm.addEventListener('click', async () => {
     if (createInFlight) return;
+
+    // Make sure user is signed in
+    if (!firebase.auth().currentUser) {
+      showToast('Still signing you in. Please wait a moment and try again.', true);
+      return;
+    }
+
     const name = sanitizeName(createName.value);
     const phone = normalizePhone(createPhone.value);
     createError.style.display = 'none';
@@ -370,7 +392,7 @@ function initApp(){
     try{
       const loc = await getLocationOnce();
       const code = await generateUniqueTripCode();
-      const memberId = makeId();
+      const memberId = firebase.auth().currentUser.uid;
 
       await db.ref('trips/' + code).set({
         createdAt: firebase.database.ServerValue.TIMESTAMP,
@@ -441,6 +463,12 @@ function initApp(){
 
   joinConfirm.addEventListener('click', async () => {
     if (joinInFlight) return;
+
+    if (!firebase.auth().currentUser) {
+      showToast('Still signing you in. Please wait a moment and try again.', true);
+      return;
+    }
+
     const name = sanitizeName(joinName.value);
     const phone = normalizePhone(joinPhone.value);
     joinError.style.display = 'none';
@@ -457,7 +485,7 @@ function initApp(){
       const snap = await db.ref('trips/' + pendingJoinCode).get();
       if (!snap.exists() || snap.val().ended) throw new Error('This trip is no longer available.');
 
-      const memberId = makeId();
+      const memberId = firebase.auth().currentUser.uid;
       await db.ref('trips/' + pendingJoinCode + '/members/' + memberId).set({
         name: name,
         phone: phone,
