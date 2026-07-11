@@ -394,6 +394,7 @@ let mapCentered = false;
 let membersListener = null;
 let tripStatusListener = null;
 let locationWatchId = null;
+let visibilityListenerAttached = false;
 
 const MEMBER_COLORS = [
   '#ffc555', '#ff5d8f', '#9d7bff', '#ff9f43', 
@@ -593,7 +594,6 @@ function updateUserLocation(){
   );
 }
 
-// ✅ FIX #1 & #2: Marker click handler update + label offset fallback
 function addOrUpdateMarker(mId, data, name){
   if (!data.lat || !data.lng) {
     if (markers[mId]) {
@@ -623,7 +623,6 @@ function addOrUpdateMarker(mId, data, name){
       fillOpacity: isOnline ? 0.9 : 0.4
     });
     
-    // ✅ FIX #1: Update click handler with latest data
     markers[mId].off('click');
     markers[mId].on('click', function() {
       showMemberPopup(mId, name, phone, isOnline, isMe, data.lat, data.lng);
@@ -645,11 +644,9 @@ function addOrUpdateMarker(mId, data, name){
     markers[mId] = marker;
   }
 
-  // ✅ FIX #2: Label offset with fallback
   const memberKeys = Object.keys(markers).sort();
   let myIndex = memberKeys.indexOf(mId);
   
-  // Fallback if index not found
   if (myIndex === -1) {
     myIndex = memberKeys.length;
   }
@@ -860,51 +857,87 @@ function loadMembers(){
   );
 }
 
+// 🔥 FIXED: Background/Foreground handling + Trip end detection
 function listenToTripStatus(){
   if (tripStatusListener) {
     db.ref('trips/' + tripCode).off('value', tripStatusListener);
   }
 
-  tripStatusListener = db.ref('trips/' + tripCode).on('value', 
-    (snap) => {
-      const trip = snap.val();
+  function handleTripUpdate(snap) {
+    const trip = snap.val();
+    
+    if (!trip || trip.ended === true) {
+      showError('Trip has ended. Redirecting...');
       
-      if (!trip || trip.ended === true) {
-        showError('Trip has ended. Redirecting...');
-        
-        if (locationWatchId !== null) {
-          navigator.geolocation.clearWatch(locationWatchId);
-          locationWatchId = null;
-        }
-        
-        try {
-          db.ref('trips/' + tripCode + '/members/' + memberId).update({
-            online: false,
-            updatedAt: firebase.database.ServerValue.TIMESTAMP
-          });
-        } catch(e) {}
-        
-        if (membersListener) {
-          db.ref('trips/' + tripCode + '/members').off('value', membersListener);
-          membersListener = null;
-        }
-        if (tripStatusListener) {
-          db.ref('trips/' + tripCode).off('value', tripStatusListener);
-          tripStatusListener = null;
-        }
-        
-        localStorage.removeItem('trip_' + tripCode + '_memberId');
-        localStorage.removeItem('trip_' + tripCode + '_isHost');
-        
-        setTimeout(() => {
-          window.location.href = '/';
-        }, 2000);
+      if (locationWatchId !== null) {
+        navigator.geolocation.clearWatch(locationWatchId);
+        locationWatchId = null;
       }
-    },
-    (error) => {
-      console.error('Trip status listener error:', error);
+      
+      try {
+        db.ref('trips/' + tripCode + '/members/' + memberId).update({
+          online: false,
+          updatedAt: firebase.database.ServerValue.TIMESTAMP
+        });
+      } catch(e) {}
+      
+      if (membersListener) {
+        db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+        membersListener = null;
+      }
+      if (tripStatusListener) {
+        db.ref('trips/' + tripCode).off('value', tripStatusListener);
+        tripStatusListener = null;
+      }
+      
+      localStorage.removeItem('trip_' + tripCode + '_memberId');
+      localStorage.removeItem('trip_' + tripCode + '_isHost');
+      
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 2000);
     }
-  );
+  }
+
+  tripStatusListener = db.ref('trips/' + tripCode).on('value', handleTripUpdate, (error) => {
+    console.error('Trip status listener error:', error);
+  });
+  
+  // 🔥 Jab user tab pe wapas aaye, connection refresh karo
+  if (!visibilityListenerAttached) {
+    visibilityListenerAttached = true;
+    
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && tripCode && memberId) {
+        console.log('Tab visible - refreshing Firebase connection');
+        
+        // Force Firebase to reconnect
+        try {
+          firebase.database().goOnline();
+        } catch(e) {
+          console.warn('goOnline failed:', e);
+        }
+        
+        // Re-check trip status manually
+        db.ref('trips/' + tripCode).once('value').then((snap) => {
+          handleTripUpdate(snap);
+        }).catch(err => {
+          console.error('Re-check failed:', err);
+        });
+        
+        // Mark self as online again
+        db.ref('trips/' + tripCode + '/members/' + memberId).update({
+          online: true,
+          updatedAt: firebase.database.ServerValue.TIMESTAMP
+        }).catch(() => {});
+        
+        // Restart location tracking if stopped
+        if (locationWatchId === null) {
+          updateUserLocation();
+        }
+      }
+    });
+  }
 }
 
 function callMember(name, phone){
