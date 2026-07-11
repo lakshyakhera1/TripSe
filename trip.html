@@ -22,24 +22,26 @@
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
   body{
     background: var(--bg-deep);
     color: var(--text);
     font-family: 'Inter', sans-serif;
-    height: 100vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
 
   header{
-    background: rgba(12,10,31,0.8);
+    background: rgba(12,10,31,0.95);
     border-bottom: 1px solid rgba(255,255,255,0.08);
     padding: 16px 24px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    z-index: 100;
+    z-index: 1000;
+    position: relative;
+    flex-shrink: 0;
   }
   .header-left{ display: flex; align-items: center; gap: 16px; }
   .trip-code{
@@ -65,7 +67,11 @@
     background: linear-gradient(135deg, var(--coral), #ff4081);
   }
 
-  .map-container{ flex: 1; position: relative; }
+  .map-container{ 
+    flex: 1; 
+    position: relative; 
+    min-height: 0;
+  }
   #map{ width: 100%; height: 100%; }
 
   .members-panel{
@@ -79,7 +85,7 @@
     border-bottom-right-radius: 0;
     border-top-left-radius: 16px;
     overflow-y: auto;
-    z-index: 50;
+    z-index: 500;
   }
   .members-head{
     padding: 16px;
@@ -145,7 +151,6 @@
     cursor: not-allowed;
   }
 
-  /* WEATHER WIDGET - BIG & VISIBLE */
   .weather-widget{
     position: absolute;
     top: 20px;
@@ -154,7 +159,7 @@
     border: 2px solid rgba(255,197,85,0.4);
     border-radius: 16px;
     padding: 18px 22px;
-    z-index: 500;
+    z-index: 600;
     font-size: 13px;
     min-width: 200px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 20px rgba(255,197,85,0.2);
@@ -191,7 +196,7 @@
     border-radius: 10px;
     font-size: 13px;
     font-weight: 600;
-    z-index: 1000;
+    z-index: 2000;
     display: none;
     animation: slideDown 0.3s ease;
   }
@@ -211,6 +216,7 @@
     white-space: nowrap;
     font-family: 'Inter', sans-serif;
     box-shadow: 0 3px 12px rgba(0,0,0,0.4);
+    pointer-events: none;
   }
   .member-label.me{
     background: rgba(69,224,196,0.3);
@@ -218,7 +224,6 @@
     color: var(--teal);
   }
 
-  /* POPUP STYLING */
   .leaflet-popup-content-wrapper{ 
     background: rgba(12,10,31,0.98) !important; 
     border: 2px solid rgba(255,197,85,0.4) !important; 
@@ -232,7 +237,6 @@
   }
   .leaflet-popup-tip{ 
     background: rgba(12,10,31,0.98) !important;
-    border: 1px solid rgba(255,197,85,0.4) !important;
   }
   .leaflet-popup-close-button{
     color: var(--text) !important;
@@ -281,9 +285,6 @@
   .popup-btn:hover{ 
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(69,224,196,0.4);
-  }
-  .popup-btn:active{
-    transform: translateY(0);
   }
   .popup-btn:disabled{
     opacity: 0.4;
@@ -392,6 +393,7 @@ let isHost = false;
 let mapCentered = false;
 let membersListener = null;
 let tripStatusListener = null;
+let locationWatchId = null;
 
 const MEMBER_COLORS = [
   '#ffc555', '#ff5d8f', '#9d7bff', '#ff9f43', 
@@ -451,6 +453,14 @@ function initTrip(){
   firebase.auth().onAuthStateChanged((user) => {
     if (user) {
       memberId = user.uid;
+      
+      const savedMemberId = localStorage.getItem('trip_' + tripCode + '_memberId');
+      
+      if (!savedMemberId || savedMemberId !== memberId) {
+        window.location.href = '/?join=' + tripCode;
+        return;
+      }
+      
       isHost = localStorage.getItem('trip_' + tripCode + '_isHost') === 'true';
 
       document.getElementById('tripCodeDisplay').textContent = 'Trip: ' + tripCode;
@@ -521,7 +531,7 @@ function updateUserLocation(){
 
   let weatherFetched = false;
 
-  const watchId = navigator.geolocation.watchPosition(
+  locationWatchId = navigator.geolocation.watchPosition(
     (pos) => {
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
@@ -581,16 +591,9 @@ function updateUserLocation(){
     },
     watchOptions
   );
-
-  window.addEventListener('beforeunload', () => {
-    navigator.geolocation.clearWatch(watchId);
-    db.ref('trips/' + tripCode + '/members/' + memberId).update({
-      online: false,
-      updatedAt: firebase.database.ServerValue.TIMESTAMP
-    });
-  });
 }
 
+// ✅ FIX #1 & #2: Marker click handler update + label offset fallback
 function addOrUpdateMarker(mId, data, name){
   if (!data.lat || !data.lng) {
     if (markers[mId]) {
@@ -619,6 +622,12 @@ function addOrUpdateMarker(mId, data, name){
       opacity: isOnline ? 1 : 0.5,
       fillOpacity: isOnline ? 0.9 : 0.4
     });
+    
+    // ✅ FIX #1: Update click handler with latest data
+    markers[mId].off('click');
+    markers[mId].on('click', function() {
+      showMemberPopup(mId, name, phone, isOnline, isMe, data.lat, data.lng);
+    });
   } else {
     const marker = L.circleMarker([data.lat, data.lng], {
       radius: isMe ? 12 : 10,
@@ -636,14 +645,35 @@ function addOrUpdateMarker(mId, data, name){
     markers[mId] = marker;
   }
 
+  // ✅ FIX #2: Label offset with fallback
+  const memberKeys = Object.keys(markers).sort();
+  let myIndex = memberKeys.indexOf(mId);
+  
+  // Fallback if index not found
+  if (myIndex === -1) {
+    myIndex = memberKeys.length;
+  }
+  
+  const angle = (myIndex * 60) * (Math.PI / 180);
+  const radius = 30;
+  const offsetX = Math.cos(angle) * radius;
+  const offsetY = Math.sin(angle) * radius - 20;
+
   if (labels[mId]) {
     labels[mId].setLatLng([data.lat, data.lng]);
+    const labelIcon = L.divIcon({
+      className: '',
+      html: `<div class="member-label ${isMe ? 'me' : ''}" style="border-color:${color}">${name}${isMe ? ' (You)' : ''}</div>`,
+      iconSize: [null, null],
+      iconAnchor: [offsetX, offsetY]
+    });
+    labels[mId].setIcon(labelIcon);
   } else {
     const labelIcon = L.divIcon({
       className: '',
       html: `<div class="member-label ${isMe ? 'me' : ''}" style="border-color:${color}">${name}${isMe ? ' (You)' : ''}</div>`,
       iconSize: [null, null],
-      iconAnchor: [0, -20]
+      iconAnchor: [offsetX, offsetY]
     });
     const label = L.marker([data.lat, data.lng], {
       icon: labelIcon,
@@ -662,8 +692,8 @@ function showMemberPopup(mId, name, phone, isOnline, isMe, lat, lng){
   if (phone) {
     buttonsHtml = `
       <div class="popup-buttons">
-        <button class="popup-btn" data-action="call" data-name="${name}" data-phone="${phone}">📞 Call</button>
-        <button class="popup-btn" data-action="msg" data-name="${name}" data-phone="${phone}">💬 Msg</button>
+        <button class="popup-btn" data-action="call" data-phone="${phone}">📞 Call</button>
+        <button class="popup-btn" data-action="msg" data-phone="${phone}">💬 Msg</button>
       </div>
     `;
   } else {
@@ -685,7 +715,6 @@ function showMemberPopup(mId, name, phone, isOnline, isMe, lat, lng){
   `)
   .openOn(map);
 
-  // Add event listeners to buttons
   setTimeout(() => {
     const popupElement = popup.getElement();
     if (popupElement) {
@@ -694,7 +723,6 @@ function showMemberPopup(mId, name, phone, isOnline, isMe, lat, lng){
         btn.addEventListener('click', function(e) {
           e.stopPropagation();
           const action = this.getAttribute('data-action');
-          const name = this.getAttribute('data-name');
           const phone = this.getAttribute('data-phone');
           
           if (action === 'call') {
@@ -785,10 +813,14 @@ function loadMembers(){
       });
 
       memberEntries.forEach(([mId, data]) => {
-        const name = data.name || 'Unknown';
+        let name = 'Unknown';
+        if (data && data.name && typeof data.name === 'string' && data.name.trim() !== '') {
+          name = data.name.trim();
+        }
+        
         const isMe = mId === memberId;
-        const phone = data.phone || '';
-        const isOnline = data.online !== false && 
+        const phone = (data && data.phone) ? data.phone : '';
+        const isOnline = data && data.online !== false && 
                         data.updatedAt && 
                         (Date.now() - data.updatedAt < 30000);
         const color = getColorForMember(mId);
@@ -816,7 +848,7 @@ function loadMembers(){
           </div>
         `;
         
-        addOrUpdateMarker(mId, data, name);
+        addOrUpdateMarker(mId, data || {}, name);
       });
 
       previousMembers = {...members};
@@ -836,10 +868,37 @@ function listenToTripStatus(){
   tripStatusListener = db.ref('trips/' + tripCode).on('value', 
     (snap) => {
       const trip = snap.val();
-      if (trip && trip.ended === true) {
-        showError('Trip ended by host. Redirecting...');
-        if (membersListener) db.ref('trips/' + tripCode + '/members').off('value', membersListener);
-        setTimeout(() => { window.location.href = '/'; }, 2000);
+      
+      if (!trip || trip.ended === true) {
+        showError('Trip has ended. Redirecting...');
+        
+        if (locationWatchId !== null) {
+          navigator.geolocation.clearWatch(locationWatchId);
+          locationWatchId = null;
+        }
+        
+        try {
+          db.ref('trips/' + tripCode + '/members/' + memberId).update({
+            online: false,
+            updatedAt: firebase.database.ServerValue.TIMESTAMP
+          });
+        } catch(e) {}
+        
+        if (membersListener) {
+          db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+          membersListener = null;
+        }
+        if (tripStatusListener) {
+          db.ref('trips/' + tripCode).off('value', tripStatusListener);
+          tripStatusListener = null;
+        }
+        
+        localStorage.removeItem('trip_' + tripCode + '_memberId');
+        localStorage.removeItem('trip_' + tripCode + '_isHost');
+        
+        setTimeout(() => {
+          window.location.href = '/';
+        }, 2000);
       }
     },
     (error) => {
@@ -868,32 +927,66 @@ window.callMember = callMember;
 window.messageMember = messageMember;
 
 document.getElementById('shareBtn').addEventListener('click', () => {
-  const link = window.location.href;
+  const baseUrl = window.location.origin + window.location.pathname;
+  const shareLink = baseUrl + '?code=' + tripCode;
+  
   if (navigator.share) {
     navigator.share({ 
       title: 'Join my trip on TripSe', 
-      text: 'Track our trip in real-time!',
-      url: link 
+      text: 'Trip Code: ' + tripCode + ' - Track our trip in real-time!',
+      url: shareLink 
     }).catch(() => {});
   } else {
-    prompt('Copy this link to share:', link);
+    prompt('Copy this link to share:', shareLink);
   }
 });
 
 document.getElementById('endTripBtn').addEventListener('click', () => {
   if (!confirm('End this trip for everyone?')) return;
   
+  if (locationWatchId !== null) {
+    navigator.geolocation.clearWatch(locationWatchId);
+    locationWatchId = null;
+  }
+  
   db.ref('trips/' + tripCode).update({ 
     ended: true,
     endedAt: firebase.database.ServerValue.TIMESTAMP
   }).then(() => {
     showError('Trip ended. Redirecting...');
-    if (membersListener) db.ref('trips/' + tripCode + '/members').off('value', membersListener);
-    if (tripStatusListener) db.ref('trips/' + tripCode).off('value', tripStatusListener);
-    setTimeout(() => { window.location.href = '/'; }, 2000);
+    
+    if (membersListener) {
+      db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+      membersListener = null;
+    }
+    if (tripStatusListener) {
+      db.ref('trips/' + tripCode).off('value', tripStatusListener);
+      tripStatusListener = null;
+    }
+    
+    localStorage.removeItem('trip_' + tripCode + '_memberId');
+    localStorage.removeItem('trip_' + tripCode + '_isHost');
+    
+    setTimeout(() => {
+      window.location.href = '/';
+    }, 2000);
   }).catch(err => {
     showError('Failed to end trip.');
   });
+});
+
+window.addEventListener('beforeunload', () => {
+  if (locationWatchId !== null) {
+    navigator.geolocation.clearWatch(locationWatchId);
+  }
+  try {
+    if (db && tripCode && memberId) {
+      db.ref('trips/' + tripCode + '/members/' + memberId).update({
+        online: false,
+        updatedAt: firebase.database.ServerValue.TIMESTAMP
+      });
+    }
+  } catch(e) {}
 });
 
 document.addEventListener('DOMContentLoaded', () => {
