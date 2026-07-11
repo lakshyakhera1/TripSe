@@ -246,7 +246,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js" defer></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js" defer></script>
 <script defer>
-// ⚠️ IMPORTANT: Replace YOUR_RECAPTCHA_SITE_KEY with your actual reCAPTCHA v3 site key from Firebase Console → App Check
 const RECAPTCHA_SITE_KEY = 'YOUR_RECAPTCHA_SITE_KEY';
 
 function initApp(){
@@ -261,7 +260,6 @@ function initApp(){
   };
   firebase.initializeApp(firebaseConfig);
 
-  // App Check setup
   try {
     firebase.appCheck().activate(RECAPTCHA_SITE_KEY, false);
   } catch(e) {
@@ -270,7 +268,29 @@ function initApp(){
 
   const db = firebase.database();
 
-  // Sign in anonymously
+  // ✅ FIX #3: Helper functions defined BEFORE use
+  function isValidTripCode(code){
+    return /^[A-Z0-9]{6}$/.test(code);
+  }
+
+  // 🔥 WhatsApp share se aaye user ko auto-join modal kholo
+  const urlParams = new URLSearchParams(window.location.search);
+  const joinCode = urlParams.get('join');
+
+  if (joinCode && isValidTripCode(joinCode)) {
+    setTimeout(() => {
+      const tripCodeInput = document.getElementById('tripCodeInput');
+      const joinForm = document.getElementById('joinForm');
+      const joinBtn = document.getElementById('joinBtn');
+      
+      if (tripCodeInput && joinForm && joinBtn) {
+        tripCodeInput.value = joinCode;
+        joinForm.classList.add('open');
+        setTimeout(() => joinBtn.click(), 300);
+      }
+    }, 800);
+  }
+
   firebase.auth().signInAnonymously().catch(err => {
     console.error('Auth error:', err);
     showToast('Authentication failed. Please refresh the page.', true);
@@ -290,14 +310,11 @@ function initApp(){
   function isValidIndianPhone(phone){
     return /^[6-9]\d{9}$/.test(phone);
   }
+  
   function normalizePhone(raw){
     let p = raw.trim().replace(/[^0-9]/g, '');
     if (p.length === 12 && p.startsWith('91')) p = p.slice(2);
     return p;
-  }
-
-  function isValidTripCode(code){
-    return /^[A-Z0-9]{6}$/.test(code);
   }
 
   function randomCode(){
@@ -372,7 +389,6 @@ function initApp(){
   createConfirm.addEventListener('click', async () => {
     if (createInFlight) return;
 
-    // Make sure user is signed in
     if (!firebase.auth().currentUser) {
       showToast('Still signing you in. Please wait a moment and try again.', true);
       return;
