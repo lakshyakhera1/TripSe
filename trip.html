@@ -394,7 +394,8 @@ let mapCentered = false;
 let membersListener = null;
 let tripStatusListener = null;
 let locationWatchId = null;
-let visibilityListenerAttached = false;
+let tripStatusHeartbeat = null;
+let tripEnded = false;
 
 const MEMBER_COLORS = [
   '#ffc555', '#ff5d8f', '#9d7bff', '#ff9f43', 
@@ -416,6 +417,57 @@ function showError(message) {
   toast.textContent = message;
   toast.style.display = 'block';
   setTimeout(() => { toast.style.display = 'none'; }, 4000);
+}
+
+function cleanupAndRedirect(message){
+  if (tripEnded) return;
+  tripEnded = true;
+  
+  if (message) showError(message);
+  
+  if (locationWatchId !== null) {
+    try { navigator.geolocation.clearWatch(locationWatchId); } catch(e) {}
+    locationWatchId = null;
+  }
+  
+  if (tripStatusHeartbeat) {
+    clearInterval(tripStatusHeartbeat);
+    tripStatusHeartbeat = null;
+  }
+  
+  try {
+    if (membersListener) {
+      db.ref('trips/' + tripCode + '/members').off('value', membersListener);
+      membersListener = null;
+    }
+    if (tripStatusListener) {
+      db.ref('trips/' + tripCode).off('value', tripStatusListener);
+      tripStatusListener = null;
+    }
+  } catch(e) {}
+  
+  try {
+    db.ref('trips/' + tripCode + '/members/' + memberId).update({
+      online: false,
+      updatedAt: firebase.database.ServerValue.TIMESTAMP
+    });
+  } catch(e) {}
+  
+  try {
+    localStorage.removeItem('trip_' + tripCode + '_memberId');
+    localStorage.removeItem('trip_' + tripCode + '_isHost');
+  } catch(e) {}
+  
+  setTimeout(() => {
+    window.location.href = '/';
+  }, 2000);
+}
+
+function handleTripUpdate(snap) {
+  const trip = snap.val();
+  if (!trip || trip.ended === true) {
+    cleanupAndRedirect('Trip has ended. Redirecting...');
+  }
 }
 
 function initTrip(){
@@ -472,6 +524,7 @@ function initTrip(){
       updateUserLocation();
       loadMembers();
       listenToTripStatus();
+      setupVisibilityHandler();
     }
   });
 }
@@ -534,6 +587,8 @@ function updateUserLocation(){
 
   locationWatchId = navigator.geolocation.watchPosition(
     (pos) => {
+      if (tripEnded) return;
+      
       const lat = pos.coords.latitude;
       const lng = pos.coords.longitude;
       
@@ -585,10 +640,12 @@ function updateUserLocation(){
         fetchWeather(28.6139, 77.2090, 'New Delhi (default)');
       }
       
-      db.ref('trips/' + tripCode + '/members/' + memberId).update({
-        online: false,
-        updatedAt: firebase.database.ServerValue.TIMESTAMP
-      });
+      if (!tripEnded) {
+        db.ref('trips/' + tripCode + '/members/' + memberId).update({
+          online: false,
+          updatedAt: firebase.database.ServerValue.TIMESTAMP
+        }).catch(() => {});
+      }
     },
     watchOptions
   );
@@ -787,6 +844,8 @@ function loadMembers(){
 
   membersListener = db.ref('trips/' + tripCode + '/members').on('value', 
     (snap) => {
+      if (tripEnded) return;
+      
       const members = snap.val() || {};
       const list = document.getElementById('membersList');
       const memberEntries = Object.entries(members);
@@ -857,87 +916,57 @@ function loadMembers(){
   );
 }
 
-// 🔥 FIXED: Background/Foreground handling + Trip end detection
 function listenToTripStatus(){
   if (tripStatusListener) {
     db.ref('trips/' + tripCode).off('value', tripStatusListener);
-  }
-
-  function handleTripUpdate(snap) {
-    const trip = snap.val();
-    
-    if (!trip || trip.ended === true) {
-      showError('Trip has ended. Redirecting...');
-      
-      if (locationWatchId !== null) {
-        navigator.geolocation.clearWatch(locationWatchId);
-        locationWatchId = null;
-      }
-      
-      try {
-        db.ref('trips/' + tripCode + '/members/' + memberId).update({
-          online: false,
-          updatedAt: firebase.database.ServerValue.TIMESTAMP
-        });
-      } catch(e) {}
-      
-      if (membersListener) {
-        db.ref('trips/' + tripCode + '/members').off('value', membersListener);
-        membersListener = null;
-      }
-      if (tripStatusListener) {
-        db.ref('trips/' + tripCode).off('value', tripStatusListener);
-        tripStatusListener = null;
-      }
-      
-      localStorage.removeItem('trip_' + tripCode + '_memberId');
-      localStorage.removeItem('trip_' + tripCode + '_isHost');
-      
-      setTimeout(() => {
-        window.location.href = '/';
-      }, 2000);
-    }
   }
 
   tripStatusListener = db.ref('trips/' + tripCode).on('value', handleTripUpdate, (error) => {
     console.error('Trip status listener error:', error);
   });
   
-  // 🔥 Jab user tab pe wapas aaye, connection refresh karo
-  if (!visibilityListenerAttached) {
-    visibilityListenerAttached = true;
-    
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && tripCode && memberId) {
-        console.log('Tab visible - refreshing Firebase connection');
-        
-        // Force Firebase to reconnect
-        try {
-          firebase.database().goOnline();
-        } catch(e) {
-          console.warn('goOnline failed:', e);
-        }
-        
-        // Re-check trip status manually
-        db.ref('trips/' + tripCode).once('value').then((snap) => {
-          handleTripUpdate(snap);
-        }).catch(err => {
-          console.error('Re-check failed:', err);
-        });
-        
-        // Mark self as online again
-        db.ref('trips/' + tripCode + '/members/' + memberId).update({
-          online: true,
-          updatedAt: firebase.database.ServerValue.TIMESTAMP
-        }).catch(() => {});
-        
-        // Restart location tracking if stopped
-        if (locationWatchId === null) {
-          updateUserLocation();
-        }
-      }
-    });
+  // 🔥 HEARTBEAT: Har 8 seconds mein trip status check karo (mobile ke liye reliable)
+  if (tripStatusHeartbeat) {
+    clearInterval(tripStatusHeartbeat);
   }
+  
+  tripStatusHeartbeat = setInterval(() => {
+    if (tripEnded || !tripCode || !memberId) return;
+    
+    db.ref('trips/' + tripCode).once('value').then((snap) => {
+      handleTripUpdate(snap);
+    }).catch(err => {
+      console.warn('Heartbeat check failed:', err);
+      try { firebase.database().goOnline(); } catch(e) {}
+    });
+  }, 8000);
+}
+
+function setupVisibilityHandler(){
+  document.addEventListener('visibilitychange', () => {
+    if (tripEnded) return;
+    
+    if (!document.hidden && tripCode && memberId) {
+      // Force reconnect
+      try { firebase.database().goOnline(); } catch(e) {}
+      
+      // Immediate check
+      db.ref('trips/' + tripCode).once('value').then((snap) => {
+        handleTripUpdate(snap);
+      }).catch(() => {});
+      
+      // Mark online
+      db.ref('trips/' + tripCode + '/members/' + memberId).update({
+        online: true,
+        updatedAt: firebase.database.ServerValue.TIMESTAMP
+      }).catch(() => {});
+      
+      // Restart location if needed
+      if (locationWatchId === null) {
+        updateUserLocation();
+      }
+    }
+  });
 }
 
 function callMember(name, phone){
@@ -977,43 +1006,26 @@ document.getElementById('shareBtn').addEventListener('click', () => {
 document.getElementById('endTripBtn').addEventListener('click', () => {
   if (!confirm('End this trip for everyone?')) return;
   
-  if (locationWatchId !== null) {
-    navigator.geolocation.clearWatch(locationWatchId);
-    locationWatchId = null;
-  }
-  
   db.ref('trips/' + tripCode).update({ 
     ended: true,
     endedAt: firebase.database.ServerValue.TIMESTAMP
   }).then(() => {
-    showError('Trip ended. Redirecting...');
-    
-    if (membersListener) {
-      db.ref('trips/' + tripCode + '/members').off('value', membersListener);
-      membersListener = null;
-    }
-    if (tripStatusListener) {
-      db.ref('trips/' + tripCode).off('value', tripStatusListener);
-      tripStatusListener = null;
-    }
-    
-    localStorage.removeItem('trip_' + tripCode + '_memberId');
-    localStorage.removeItem('trip_' + tripCode + '_isHost');
-    
-    setTimeout(() => {
-      window.location.href = '/';
-    }, 2000);
+    cleanupAndRedirect('Trip ended. Redirecting...');
   }).catch(err => {
+    console.error('End trip error:', err);
     showError('Failed to end trip.');
   });
 });
 
 window.addEventListener('beforeunload', () => {
   if (locationWatchId !== null) {
-    navigator.geolocation.clearWatch(locationWatchId);
+    try { navigator.geolocation.clearWatch(locationWatchId); } catch(e) {}
+  }
+  if (tripStatusHeartbeat) {
+    clearInterval(tripStatusHeartbeat);
   }
   try {
-    if (db && tripCode && memberId) {
+    if (db && tripCode && memberId && !tripEnded) {
       db.ref('trips/' + tripCode + '/members/' + memberId).update({
         online: false,
         updatedAt: firebase.database.ServerValue.TIMESTAMP
